@@ -47,123 +47,164 @@ interface Order {
   ascending: boolean;
 }
 
-export interface QueryBuilder<T = Row> {
-  select: (columns?: string) => QueryBuilder<T>;
-  eq: (column: string, value: any) => QueryBuilder<T>;
-  in: (column: string, values: any[]) => QueryBuilder<T>;
-  order: (column: string, opts?: { ascending?: boolean }) => QueryBuilder<T>;
-  limit: (n: number) => QueryBuilder<T>;
-  maybeSingle: () => Promise<{ data: T | null; error: null }>;
-  single: () => Promise<{ data: T | null; error: Error | null }>;
-  insert: (rows: Row | Row[]) => Promise<{ data: T[] | null; error: null }>;
-  update: (patch: Row) => Promise<{ data: T[] | null; error: null }>;
-  upsert: (row: Row) => Promise<{ data: T[] | null; error: null }>;
-  delete: () => Promise<{ error: null }>;
-  rpc: (fn: string, params?: Record<string, any>) => Promise<{ data: any; error: null }>;
-}
+type Mode = "select" | "insert" | "update" | "upsert" | "delete";
 
-export function from<T = Row>(table: string): QueryBuilder<T> {
-  let filters: Filter[] = [];
-  let orders: Order[] = [];
-  let limitCount: number | undefined;
-  let singleMode: "maybe" | "required" | false = false;
+class Query<T = Row> {
+  private table: string;
+  private filters: Filter[] = [];
+  private orders: Order[] = [];
+  private limitCount: number | undefined;
+  private mode: Mode = "select";
+  private insertRows: Row[] | undefined;
+  private updatePatch: Row | undefined;
+  private returnData = false;
 
-  const builder: QueryBuilder<T> = {
-    select: () => builder,
-    eq: (column, value) => {
-      filters.push({ column, op: "eq", value });
-      return builder;
-    },
-    in: (column, values) => {
-      filters.push({ column, op: "in", value: values });
-      return builder;
-    },
-    order: (column, opts = {}) => {
-      orders.push({ column, ascending: opts.ascending ?? true });
-      return builder;
-    },
-    limit: (n) => {
-      limitCount = n;
-      return builder;
-    },
-    maybeSingle: () => {
-      singleMode = "maybe";
-      return execute();
-    },
-    single: () => {
-      singleMode = "required";
-      return execute();
-    },
-    insert: async (rows) => {
-      const input = Array.isArray(rows) ? rows : [rows];
-      const stored = read(table);
-      const created = input.map((r) => ({ ...r, id: r.id || uid() }));
+  constructor(table: string) {
+    this.table = table;
+  }
+
+  select(_columns?: string): this {
+    this.mode = "select";
+    this.returnData = true;
+    return this;
+  }
+
+  eq(column: string, value: any): this {
+    this.filters.push({ column, op: "eq", value });
+    return this;
+  }
+
+  in(column: string, values: any[]): this {
+    this.filters.push({ column, op: "in", value: values });
+    return this;
+  }
+
+  order(column: string, opts: { ascending?: boolean } = {}): this {
+    this.orders.push({ column, ascending: opts.ascending ?? true });
+    return this;
+  }
+
+  limit(n: number): this {
+    this.limitCount = n;
+    return this;
+  }
+
+  insert(rows: Row | Row[]): this {
+    this.mode = "insert";
+    this.insertRows = Array.isArray(rows) ? rows : [rows];
+    return this;
+  }
+
+  update(patch: Row): this {
+    this.mode = "update";
+    this.updatePatch = patch;
+    return this;
+  }
+
+  upsert(row: Row): this {
+    this.mode = "upsert";
+    this.insertRows = [row];
+    return this;
+  }
+
+  delete(): this {
+    this.mode = "delete";
+    return this;
+  }
+
+  rpc(_fn: string, params?: Record<string, any>): Promise<{ data: any; error: null }> {
+    if (this.table === "" && params?._code) {
+      const households = read("households");
+      const hh = households.find((h) => h.invite_code === params._code);
+      if (!hh) return Promise.resolve({ data: null, error: null });
+      const members = read("household_members");
+      const userId = getDemoUserId();
+      const already = members.find((m) => m.household_id === hh.id && m.user_id === userId);
+      if (!already) {
+        members.push({
+          id: uid(),
+          household_id: hh.id,
+          user_id: userId,
+          color: "teal",
+          joined_at: new Date().toISOString(),
+        });
+        write("household_members", members);
+      }
+      return Promise.resolve({ data: hh.id, error: null });
+    }
+    return Promise.resolve({ data: null, error: null });
+  }
+
+  maybeSingle(): Promise<{ data: T | null; error: null }> {
+    return this.executeSingle("maybe") as any;
+  }
+
+  single(): Promise<{ data: T | null; error: Error | null }> {
+    return this.executeSingle("required") as any;
+  }
+
+  private executeSingle(kind: "maybe" | "required"): Promise<{ data: any; error: any }> {
+    return this.execute().then((rows) => {
+      const data = rows[0] || null;
+      if (kind === "required" && !data) {
+        return { data: null, error: new Error("No rows found") };
+      }
+      return { data, error: null };
+    });
+  }
+
+  private execute(): Promise<T[]> {
+    if (this.mode === "insert") {
+      const stored = read(this.table);
+      const created = (this.insertRows ?? []).map((r) => ({ ...r, id: r.id || uid() }));
       stored.push(...created);
-      write(table, stored);
-      return { data: created as T[], error: null };
-    },
-    update: async (patch) => {
-      const stored = read(table);
-      let updated: Row[] = [];
+      write(this.table, stored);
+      return Promise.resolve(created as T[]);
+    }
+
+    if (this.mode === "upsert") {
+      const stored = read(this.table);
+      const row = this.insertRows?.[0];
+      if (!row) return Promise.resolve([]);
+      const idx = row.id ? stored.findIndex((r) => r.id === row.id) : -1;
+      if (idx >= 0) {
+        stored[idx] = { ...stored[idx], ...row };
+        write(this.table, stored);
+        return Promise.resolve([stored[idx]!] as T[]);
+      }
+      const created = { ...row, id: row.id || uid() };
+      stored.push(created);
+      write(this.table, stored);
+      return Promise.resolve([created] as T[]);
+    }
+
+    if (this.mode === "update") {
+      const stored = read(this.table);
+      const patch = this.updatePatch ?? {};
+      const updated: Row[] = [];
       const next = stored.map((row) => {
-        if (matches(row, filters)) {
+        if (matches(row, this.filters)) {
           const u = { ...row, ...patch };
           updated.push(u);
           return u;
         }
         return row;
       });
-      write(table, next);
-      return { data: updated as T[], error: null };
-    },
-    upsert: async (row) => {
-      const stored = read(table);
-      const idx = row.id ? stored.findIndex((r) => r.id === row.id) : -1;
-      if (idx >= 0) {
-        stored[idx] = { ...stored[idx], ...row };
-        write(table, stored);
-        return { data: [stored[idx]!] as T[], error: null };
-      }
-      const created = { ...row, id: row.id || uid() };
-      stored.push(created);
-      write(table, stored);
-      return { data: [created] as T[], error: null };
-    },
-    delete: async () => {
-      const stored = read(table);
-      write(
-        table,
-        stored.filter((row) => !matches(row, filters)),
-      );
-      return { error: null };
-    },
-    rpc: async (fn, params = {}) => {
-      if (fn === "join_household_by_code") {
-        const households = read("households");
-        const hh = households.find((h) => h.invite_code === params._code);
-        if (!hh) return { data: null, error: null };
-        const members = read("household_members");
-        const userId = getDemoUserId();
-        const already = members.find((m) => m.household_id === hh.id && m.user_id === userId);
-        if (!already) {
-          members.push({
-            id: uid(),
-            household_id: hh.id,
-            user_id: userId,
-            color: "teal",
-            joined_at: new Date().toISOString(),
-          });
-          write("household_members", members);
-        }
-        return { data: hh.id, error: null };
-      }
-      return { data: null, error: null };
-    },
-  };
+      write(this.table, next);
+      return Promise.resolve(updated as T[]);
+    }
 
-  async function execute(): Promise<any> {
-    let rows = read(table).filter((row) => matches(row, filters));
-    for (const o of orders) {
+    if (this.mode === "delete") {
+      const stored = read(this.table);
+      write(
+        this.table,
+        stored.filter((row) => !matches(row, this.filters)),
+      );
+      return Promise.resolve([]);
+    }
+
+    let rows = read(this.table).filter((row) => matches(row, this.filters));
+    for (const o of this.orders) {
       rows.sort((a, b) => {
         const av = a[o.column];
         const bv = b[o.column];
@@ -175,15 +216,23 @@ export function from<T = Row>(table: string): QueryBuilder<T> {
         return 0;
       });
     }
-    if (limitCount !== undefined) rows = rows.slice(0, limitCount);
-    if (singleMode === "maybe") return { data: rows[0] || null, error: null };
-    if (singleMode === "required") {
-      return { data: rows[0] || null, error: rows[0] ? null : new Error("No rows found") };
-    }
-    return { data: rows as T[], error: null };
+    if (this.limitCount !== undefined) rows = rows.slice(0, this.limitCount);
+    return Promise.resolve(rows as T[]);
   }
 
-  return builder;
+  // Make the query thenable so `await query` works like `.select()` by default.
+  then<TResult1 = T[], TResult2 = never>(
+    onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
+  ): Promise<TResult1 | TResult2> {
+    return this.execute().then(onfulfilled, onrejected);
+  }
+}
+
+export type QueryBuilder<T = Row> = Query<T>;
+
+export function from<T = Row>(table: string): QueryBuilder<T> {
+  return new Query<T>(table);
 }
 
 let _demoUserId = "";
