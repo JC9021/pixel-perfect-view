@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { resetDemoData } from "@/lib/local-db";
 import { useAuth } from "@/hooks/useAuth";
 import { useHousehold } from "@/hooks/useChoreMate";
 import { PersonAvatar } from "@/components/PersonAvatar";
@@ -120,12 +120,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         <p className="font-mono">ChoreMate · a calmer way to split the house</p>
         <button
           className="font-mono underline-offset-4 hover:underline"
-          onClick={async () => {
-            await supabase.auth.signOut();
-            navigate({ to: "/auth" });
+          onClick={() => {
+            resetDemoData();
+            window.location.href = "/";
           }}
         >
-          Sign out
+          Reset data
         </button>
       </footer>
     </PageFrame>

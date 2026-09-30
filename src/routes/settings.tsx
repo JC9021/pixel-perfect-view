@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/hooks/useAuth";
 import { useHousehold } from "@/hooks/useChoreMate";
 import { supabase } from "@/integrations/supabase/client";
+import { resetDemoData } from "@/lib/local-db";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,7 +27,6 @@ function SettingsPage() {
 function Settings() {
   const { user } = useAuth();
   const { data: hhData, refetch } = useHousehold();
-  const navigate = useNavigate();
   const [name, setName] = useState(
     (user?.user_metadata?.display_name as string) ?? "",
   );
@@ -105,12 +106,12 @@ function Settings() {
       <div className="tile p-5">
         <Button
           variant="outline"
-          onClick={async () => {
-            await supabase.auth.signOut();
-            navigate({ to: "/auth" });
+          onClick={() => {
+            resetDemoData();
+            window.location.href = "/";
           }}
         >
-          Sign out
+          Reset data
         </Button>
       </div>
     </div>
