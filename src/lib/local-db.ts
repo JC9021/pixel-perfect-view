@@ -144,7 +144,7 @@ class Query<T = Row> {
   }
 
   private executeSingle(kind: "maybe" | "required"): Promise<{ data: any; error: any }> {
-    return this.execute().then((rows) => {
+    return this.run().then((rows) => {
       const data = rows[0] || null;
       if (kind === "required" && !data) {
         return { data: null, error: new Error("No rows found") };
@@ -153,7 +153,7 @@ class Query<T = Row> {
     });
   }
 
-  private execute(): Promise<T[]> {
+  private run(): Promise<T[]> {
     if (this.mode === "insert") {
       const stored = read(this.table);
       const created = (this.insertRows ?? []).map((r) => ({ ...r, id: r.id || uid() }));
@@ -221,11 +221,11 @@ class Query<T = Row> {
   }
 
   // Make the query thenable so `await query` works like `.select()` by default.
-  then<TResult1 = T[], TResult2 = never>(
-    onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  then<TResult1 = { data: T[]; error: null }, TResult2 = never>(
+    onfulfilled?: ((value: { data: T[]; error: null }) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): Promise<TResult1 | TResult2> {
-    return this.execute().then(onfulfilled, onrejected);
+    return this.run().then((rows) => ({ data: rows, error: null })).then(onfulfilled, onrejected);
   }
 }
 
