@@ -37,7 +37,7 @@ export async function regenerateWeek(options: {
     members,
     weekStart,
     rotate,
-    seed: shuffle ? Math.floor(Math.random() * 1_000_000) + 1 : undefined,
+    ...(shuffle ? { seed: Math.floor(Math.random() * 1_000_000) + 1 } : {}),
   }).filter((p) => !doneKeys.has(`${p.chore_id}|${p.due_date}`));
 
   if (plan.length) {
